@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+node_modules/
+.browsers/
+.reference-materials/
+.env
+paper-signal-output/
+*.tgz
+/cutout-timeline.mjs
+/scene-plan.mjs

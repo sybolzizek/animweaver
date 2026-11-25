@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "strict": true,
+    "noEmitOnError": true,
+    "rootDir": "src",
+    "outDir": "."
+  },
+  "include": ["src/**/*.mts"],
+  "exclude": ["node_modules"]
+}
