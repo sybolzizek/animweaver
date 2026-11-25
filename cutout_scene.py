@@ -325,7 +325,17 @@ def build(
     return _assemble(work, recipe)
 
 
-def _assemble(work, recipe, previous=None):
+def _motion_provenance(record, provenance):
+    if provenance is None:
+        return record
+    inputs = dict(record.get("inputs", {}))
+    inputs["motion_reference"] = provenance["reference"]
+    record["inputs"] = inputs
+    record["motion_retarget"] = provenance
+    return record
+
+
+def _assemble(work, recipe, previous=None, provenance=None):
     base_id, duration, backing = (
         recipe["base"],
         float(recipe["duration"]),
@@ -525,31 +535,29 @@ def _assemble(work, recipe, previous=None):
         files["cutout-shadows.mjs"] = (
             Path(__file__).with_name("cutout-shadows.mjs").read_bytes()
         )
-    return work.create(
-        dict(
-            kind="cutout_scene",
-            origin="derived",
-            parent=previous or base_id,
-            base=base_id,
-            inputs={f"source_{i}": item for i, item in enumerate(images)},
-            width=width,
-            height=height,
-            duration=duration,
-            groups=spec["groups"],
-            layers=[layer.model_dump() for layer in layers],
-            backing=backing,
-            claim_order=priority,
-            cutouts=catalog,
-            shadows=spec["shadows"],
-            **({"seams": [seam.model_dump() for seam in seams]} if seams else {}),
-            **({"mattes": spec["mattes"]} if mattes else {}),
-            backdrop_pixels=int(np.count_nonzero(owner == 0)),
-        ),
-        files,
+    record = dict(
+        kind="cutout_scene",
+        origin="derived",
+        parent=previous or base_id,
+        base=base_id,
+        inputs={f"source_{i}": item for i, item in enumerate(images)},
+        width=width,
+        height=height,
+        duration=duration,
+        groups=spec["groups"],
+        layers=[layer.model_dump() for layer in layers],
+        backing=backing,
+        claim_order=priority,
+        cutouts=catalog,
+        shadows=spec["shadows"],
+        **({"seams": [seam.model_dump() for seam in seams]} if seams else {}),
+        **({"mattes": spec["mattes"]} if mattes else {}),
+        backdrop_pixels=int(np.count_nonzero(owner == 0)),
     )
+    return work.create(_motion_provenance(record, provenance), files)
 
 
-def _revise_timeline(work, scene, recipe):
+def _revise_timeline(work, scene, recipe, provenance=None):
     spec = json.loads(work.path(scene["files"]["scene.json"]).read_text("utf-8"))
     motion = {layer["key"]: layer.get("motion", []) for layer in recipe["layers"]}
     spec.update(duration=float(recipe["duration"]), groups=recipe["groups"])
@@ -564,6 +572,7 @@ def _revise_timeline(work, scene, recipe):
         duration=spec["duration"],
         cutouts=spec["layers"],
     )
+    _motion_provenance(record, provenance)
     # A new, portable bundle with byte-identical rasters; no mask/mesh rebuild.
     files = {
         name: work.path(path).read_bytes()
@@ -577,7 +586,7 @@ def _revise_timeline(work, scene, recipe):
     return work.create(record, files)
 
 
-def revise(work, scene, **patch):
+def revise(work, scene, *, provenance=None, **patch):
     if scene["kind"] != "cutout_scene":
         raise ValueError("Select an existing cutout scene")
     original = {
@@ -589,5 +598,7 @@ def revise(work, scene, **patch):
     original.update({key: scene.get(key, []) for key in ("shadows", "seams", "mattes")})
     result = plan_scene(original, patch)
     if result["timelineOnly"]:
-        return _revise_timeline(work, scene, result["recipe"])
-    return _assemble(work, result["recipe"], previous=scene["id"])
+        return _revise_timeline(work, scene, result["recipe"], provenance)
+    return _assemble(
+        work, result["recipe"], previous=scene["id"], provenance=provenance
+    )

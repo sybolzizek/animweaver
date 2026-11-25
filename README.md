@@ -1,21 +1,17 @@
 # AnimWeaver
 
-AnimWeaver is a local MCP toolkit for turning still images into editable cutout animations. It keeps source pixels, cutout ownership, motion and draw order separate. Bring your own PNG masks; no model, API key or cloud service is required. The included paper-signal example creates its own assets and can render PNG or MP4.
-
 本地 MCP 插件。以一张或多张图片为材料，制作可编辑的裁片场景和动画。原始像素、裁片归属、运动和绘制顺序分开保存。适合分层合成、局部动作和遮挡重排；不是视频分割、3D 重建或剪辑软件。遮罩可以来自任意能输出 PNG 的工具；插件不附带或要求安装模型。
 
 ## 安装并接入 Agent
 
-需要 Node.js 22 或更新版本（含 npm）和 Python 3.11+；MP4 另需带 `libx264` 的 FFmpeg。npm 安装包提供 CLI 和 Playwright，`setup` 单独准备图像处理所需的 Python 环境，不会在 npm 安装阶段执行脚本，也不安装模型。
+发布渠道是 npm。需要 Node.js 22（含 npm）和 Python 3.11+；MP4 另需带 `libx264` 的 FFmpeg。npm 包提供 CLI 和 Playwright，`setup` 单独准备图像处理所需的 Python 环境，不会在 npm 安装阶段执行脚本，也不安装模型。
 
-从 GitHub 克隆后，在仓库目录用 npm 打包安装（无需 npm 账号）：
+从仓库试装（发到 npm 后，将 `.tgz` 换成包名）：
 
 ```sh
-git clone https://github.com/sybolzizek/animweaver.git
-cd animweaver
 npm ci
 npm pack
-npm install -g ./reference-materials-mcp-0.1.0.tgz
+npm install -g ./reference-materials-mcp-0.2.0.tgz
 reference-materials setup --client codex --workspace "/absolute/path/to/materials"
 ```
 
@@ -81,6 +77,59 @@ python examples/paper-signal.py paper-signal-output --video
 `refine_image_split_edges` 产出的 ID 可以通过 `revise_cutout_scene.edge_mattes` 回接原裁片，或在创建时填入图层的 `edge_matte`。柔边只改变绘制表面，不重新分配像素或绑骨。底图上的裁片需要干净底板才能移动硬边之外的柔边；蒙皮在原网格覆盖范围内绘制，若需要预留空间则在绑定时明确 `mesh.domain`。导出的场景记录会报告被裁掉的柔边像素。
 
 `revise_cutout_scene.motions` 按名称替换一个或多个组／裁片的动作轨，不动其余轨道。空数组清空指定轨道；可另传 `duration`，已有关键帧和作用区间若超出新片长会报错，不会偷偷改时序。
+
+## 参考动作与自动检查
+
+插件可以把外部跟踪器或 Agent 整理的二维点轨迹映射到现有场景节点。它不绑定姿态识别模型；上游只需输出工作区内的 JSON：
+
+```json
+{
+  "schema": 1,
+  "width": 1920,
+  "height": 1080,
+  "duration": 1.5,
+  "tracks": {
+    "Hip": [
+      {"time": 0, "x": 840, "y": 620, "confidence": 0.98},
+      {"time": 1.5, "x": 910, "y": 600, "confidence": 0.96}
+    ],
+    "Shoulder": [
+      {"time": 0, "x": 830, "y": 430},
+      {"time": 1.5, "x": 850, "y": 420}
+    ],
+    "Wrist": [
+      {"time": 0, "x": 970, "y": 440},
+      {"time": 1.5, "x": 850, "y": 300}
+    ]
+  }
+}
+```
+
+`register_motion_reference` 会校验时间顺序、尺寸、置信度和片长，并在素材库中保存规范化快照。`retarget_motion_reference` 的绑定支持：
+
+- `position`：相对于首个采样点的局部位移；
+- `direction: [from, to]`：方向向量的旋转和可选长度缩放；
+- `relative_direction`：减去父级或另一参考向量的旋转，得到子骨骼的局部转角；
+- `fit`、时间区间、目标片长、低置信度插值和可选平滑。
+
+映射只替换被点名节点的运动轨道，原裁片、网格、遮挡、外观和未映射动作保持不变。场景记录会保存动作参考 ID、绑定和低置信度修复数量。
+
+已有姿态跟踪结果可直接用 `register_pose_reference` 转换：
+
+- `format: "mediapipe"`：读取一个含 `frames` 的 JSON，每帧使用 `pose_landmarks` 或 `landmarks`，支持 33 点单人结果或多人列表；可指定归一化坐标或像素坐标。
+- `format: "openpose"`：读取一个按文件名排序的逐帧 JSON 目录，支持 BODY_25 和 COCO_18 的 `pose_keypoints_2d`。
+
+两种适配器都输出同一份动作格式。缺失人物或关键点会写成零置信度观测，后续映射会明确记录插值数量，不把缺帧伪装成可靠动作。MediaPipe 的时间可来自 `time`、`timestamp_ms` 或帧率；OpenPose 使用目录帧序和指定帧率。
+
+完成映射后，用 `audit_cutout_scene` 在关键帧和固定采样点实际渲染检查。报告包含接缝跨度、关键事件的露底／未填充像素、无底板透明输出，以及基于相邻帧差分的单帧跳变候选。它不修改场景；Agent 根据报告定位对应轨道或合成关系，再调用现有修订工具。
+
+## 可迁移场景包
+
+`export_animweaver_scene` 把场景及完整素材依赖闭包写入新的 `.animweaver` 文件，包括源图快照、裁片选择、补充素材、动作参考、场景记录和运行时文件。包内 manifest 记录根场景、素材 ID、每个文件的大小和 SHA-256；导出不会覆盖已有文件。
+
+`import_animweaver_scene` 在写入素材库前验证路径、文件声明、校验值、素材记录、依赖闭包和 ID 冲突。相同素材按字节复用，不重新写入；不同内容不能占用同一个素材 ID。导入返回可继续调用 `revise_cutout_scene`、`audit_cutout_scene` 和渲染工具的根场景，以及一条独立的导入回执。
+
+`.animweaver` 是带完整性清单的 ZIP 容器，不依赖原工作区的绝对路径。包中保留登记时的工作区相对来源说明，但实际编辑和渲染使用随包保存的素材快照。
 
 场景结构、版本补丁和时间线规则由 TypeScript 实现；浏览器读取同一份编译后的时间线。只修改动作或片长时，新版本复用原来的 PNG 和网格，不重新读原素材。Python 保留 MCP 协议适配、像素处理和资源落盘。npm 包已经包含编译结果，安装包的用户不需要 TypeScript 编译器。
 

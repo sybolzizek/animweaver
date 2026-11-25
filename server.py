@@ -15,6 +15,8 @@ from PIL import Image as PILImage, ImageDraw, ImageOps
 
 from comparison import Alignment, PointPair, compare
 from image_tools import register_image_tools
+from motion_tools import register_motion_tools
+from package_tools import register_package_tools
 from scene_export import run_job
 
 MATERIAL_ID = re.compile(r"[0-9a-f]{24}")
@@ -167,6 +169,9 @@ def serve(root):
             "shot, identify what shares a surface, what must stay in contact and what must "
             "pass in front or behind. Split only where motion or occlusion requires it. "
             "Inspect a frame where those relationships are most stressed before final export. "
+            "Tracked 2D points can retarget selected scene nodes without replacing the rig; "
+            "audit the revised scene before export and repair the implicated relationship. "
+            "Use an AnimWeaver scene package when editable materials must move between workspaces. "
             "Read reference-materials://guide/compositing for coordinate conventions and repair choices."
         ),
     )
@@ -329,6 +334,8 @@ def serve(root):
         return Image(data=stream.getvalue(), format="png")
 
     register_image_tools(mcp, work)
+    register_motion_tools(mcp, work)
+    register_package_tools(mcp, work)
     mcp.run(transport="stdio")
 
 

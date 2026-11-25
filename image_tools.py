@@ -7,6 +7,7 @@ import image_split
 import cutout_scene
 import cutout_tree
 import scene_export
+import scene_audit
 import scene_appearance
 from scene_seams import Seam
 from pydantic import Field, FiniteFloat
@@ -276,6 +277,21 @@ def register_image_tools(mcp, work):
     def inspect_cutout_video(id: str) -> dict:
         """Read a submitted MP4 job without restarting it. Completed jobs include the render record."""
         return scene_export.status(work, id)
+
+    @mcp.tool()
+    async def audit_cutout_scene(
+        id: str, fps: int = 12, max_frames: int = 480, pop_ratio: float = 3
+    ) -> dict:
+        """Audit a scene at key events and regular samples without exporting a video.
+
+        Reports seam span failures, exact exposed/unfilled pixels at authored event
+        times, transparency without backing, and single-frame jump candidates from
+        downsampled frame differences. This is evidence for an agent to revise the
+        implicated track or compositing relationship; it does not alter the scene.
+        """
+        return await asyncio.to_thread(
+            scene_audit.audit, work, work.load(id), fps, max_frames, pop_ratio
+        )
 
     @mcp.tool()
     async def refine_image_split_edges(id: str, band_px: int = 4) -> dict:
