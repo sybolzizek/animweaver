@@ -14,6 +14,8 @@ from mcp.server.fastmcp import FastMCP, Image
 from PIL import Image as PILImage, ImageDraw, ImageOps
 
 from comparison import Alignment, PointPair, compare
+import film_export
+from film_tools import register_film_tools
 from image_tools import register_image_tools
 from motion_tools import register_motion_tools
 from package_tools import register_package_tools
@@ -165,13 +167,15 @@ def serve(root):
     mcp = FastMCP(
         "reference-materials",
         instructions=(
-            "Local images, editable cutout trees, and renderable scenes. Before rigging a "
+            "Local images, editable cutout trees, renderable scenes, and frame-exact films. Before rigging a "
             "shot, identify what shares a surface, what must stay in contact and what must "
             "pass in front or behind. Split only where motion or occlusion requires it. "
             "Inspect a frame where those relationships are most stressed before final export. "
             "Tracked 2D points can retarget selected scene nodes without replacing the rig; "
             "audit the revised scene before export and repair the implicated relationship. "
             "Use an AnimWeaver scene package when editable materials must move between workspaces. "
+            "Build long work as ordered film shots with explicit frames, beat alignment and events; "
+            "inspect the compiled timeline before rendering the complete film. "
             "Read reference-materials://guide/compositing for coordinate conventions and repair choices."
         ),
     )
@@ -335,6 +339,7 @@ def serve(root):
 
     register_image_tools(mcp, work)
     register_motion_tools(mcp, work)
+    register_film_tools(mcp, work)
     register_package_tools(mcp, work)
     mcp.run(transport="stdio")
 
@@ -343,8 +348,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--render-job", help=argparse.SUPPRESS)
+    parser.add_argument("--film-render-job", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.render_job:
+    if args.film_render_job:
+        film_export.run_job(Materials(args.workspace), args.film_render_job)
+    elif args.render_job:
         run_job(Materials(args.workspace), args.render_job)
     else:
         serve(args.workspace)

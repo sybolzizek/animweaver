@@ -10,3 +10,5 @@ paper-signal-output/
 *.tgz
 /cutout-timeline.mjs
 /scene-plan.mjs
+/examples/pelican-storm/
+/examples/pelican-flex/

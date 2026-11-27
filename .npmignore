@@ -1,3 +1,5 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+examples/pelican-storm/
+examples/pelican-flex/

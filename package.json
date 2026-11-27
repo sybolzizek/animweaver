@@ -1,20 +1,56 @@
 {
   "name": "reference-materials-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "MIT",
   "description": "Local MCP tools for editable image cutouts, motion and compositing",
-  "repository": { "type": "git", "url": "git+https://github.com/sybolzizek/animweaver.git" },
-  "bugs": { "url": "https://github.com/sybolzizek/animweaver/issues" },
-  "engines": { "node": ">=22" },
-  "bin": { "reference-materials": "reference-materials.mjs" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sybolzizek/animweaver.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sybolzizek/animweaver/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "reference-materials": "reference-materials.mjs"
+  },
   "files": [
-    "reference-materials.mjs", "install_mcp.py", "requirements.txt", "server.py",
-    "comparison.py", "cutout_scene.py", "cutout_tree.py", "edge_matte.py",
-    "image_split.py", "image_tools.py", "motion_reference.py", "motion_tools.py",
-    "pose_adapters.py", "package_tools.py", "scene_package.py", "scene_appearance.py",
-    "scene_audit.py", "scene_export.py", "audit-cutout.mjs",
-    "scene_seams.py", "scene_planner.py", "scene-planner-cli.mjs", "scene-plan.mjs",
-    "cutout-*.mjs", "render-cutout.mjs", "src/", "AGENT-GUIDE.md", "examples/"
+    "reference-materials.mjs",
+    "install_mcp.py",
+    "requirements.txt",
+    "server.py",
+    "comparison.py",
+    "cutout_scene.py",
+    "cutout_tree.py",
+    "edge_matte.py",
+    "image_split.py",
+    "image_tools.py",
+    "motion_reference.py",
+    "motion_tools.py",
+    "film_project.py",
+    "film_tools.py",
+    "film_export.py",
+    "render-film.mjs",
+    "pose_adapters.py",
+    "package_tools.py",
+    "scene_package.py",
+    "scene_appearance.py",
+    "scene_audit.py",
+    "scene_export.py",
+    "audit-cutout.mjs",
+    "scene_seams.py",
+    "scene_planner.py",
+    "scene-planner-cli.mjs",
+    "scene-plan.mjs",
+    "scene-evaluate.mjs",
+    "three-scene.mjs",
+    "cutout-*.mjs",
+    "render-cutout.mjs",
+    "src/",
+    "AGENT-GUIDE.md",
+    "examples/paper-signal.py"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -22,7 +58,8 @@
     "install-browser": "playwright-core install --only-shell chromium"
   },
   "dependencies": {
-    "playwright-core": "1.58.2"
+    "playwright-core": "1.58.2",
+    "three": "0.187.0"
   },
   "devDependencies": {
     "typescript": "5.9.3"

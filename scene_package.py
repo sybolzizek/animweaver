@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 MATERIAL_ID = re.compile(r"[0-9a-f]{24}")
 FORMAT = "animweaver.scene"
 VERSION = 1
+ROOT_KINDS = {"cutout_scene", "film_project"}
 MAX_FILES = 20_000
 MAX_FILE_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
@@ -86,8 +87,8 @@ def _zip_write(archive, name: str, data: bytes):
 
 
 def export(work, scene: dict, output: str) -> dict:
-    if scene["kind"] != "cutout_scene":
-        raise ValueError("Choose an editable cutout scene")
+    if scene.get("kind") not in ROOT_KINDS:
+        raise ValueError("Choose an editable cutout scene or film project")
     target = work.path(output)
     if target.suffix.lower() != ".animweaver" or target.is_relative_to(work.store):
         raise ValueError("Choose a workspace .animweaver path outside the material store")
@@ -105,6 +106,7 @@ def export(work, scene: dict, output: str) -> dict:
         "format": FORMAT,
         "version": VERSION,
         "root_scene": scene["id"],
+        "root_kind": scene["kind"],
         "materials": sorted(records),
         "entries": entries,
     }
@@ -130,12 +132,15 @@ def export(work, scene: dict, output: str) -> dict:
                 raise
     finally:
         staged.unlink(missing_ok=True)
+    root_field = "scene" if scene["kind"] == "cutout_scene" else "project"
     return work.create(
         dict(
             kind="scene_package_export",
             origin="derived",
             parent=scene["id"],
-            scene=scene["id"],
+            root=scene["id"],
+            root_kind=scene["kind"],
+            **{root_field: scene["id"]},
             path=work.rel(target),
             sha256=work.digest(target),
             materials=len(records),
@@ -257,8 +262,10 @@ def _records(archive, manifest):
             raise ValueError(f"AnimWeaver material {ref_id} files do not match its record")
         records[ref_id] = record
     root = records[manifest["root_scene"]]
-    if root.get("kind") != "cutout_scene":
-        raise ValueError("AnimWeaver package root is not an editable scene")
+    if root.get("kind") not in ROOT_KINDS or manifest.get(
+        "root_kind", root.get("kind")
+    ) != root.get("kind"):
+        raise ValueError("AnimWeaver package root is not an editable project")
     included = set(records)
     unresolved = sorted(
         {
@@ -290,7 +297,7 @@ def _existing_matches(work, archive, ref_id: str, record: dict):
     return True
 
 
-def import_package(work, name: str) -> dict:
+def import_package(work, name: str, expected_kind: str | None = None) -> dict:
     path = work.path(name)
     if (
         not path.is_file()
@@ -307,6 +314,9 @@ def import_package(work, name: str) -> dict:
         members = _safe_members(archive)
         manifest = _validate_manifest(archive, members)
         records = _records(archive, manifest)
+        root = records[manifest["root_scene"]]
+        if expected_kind is not None and root.get("kind") != expected_kind:
+            raise ValueError(f"AnimWeaver package root is not a {expected_kind}")
         reused = {
             ref_id
             for ref_id, record in records.items()
@@ -327,12 +337,15 @@ def import_package(work, name: str) -> dict:
     if work.digest(path) != checksum:
         raise ValueError("AnimWeaver package changed during import")
     root = work.load(manifest["root_scene"])
+    root_field = "scene" if root["kind"] == "cutout_scene" else "project"
     receipt = work.create(
         dict(
             kind="scene_package_import",
             origin="imported",
             parent=root["id"],
-            scene=root["id"],
+            root=root["id"],
+            root_kind=root["kind"],
+            **{root_field: root["id"]},
             path=work.rel(path),
             sha256=checksum,
             imported=len(records) - len(reused),
@@ -340,4 +353,4 @@ def import_package(work, name: str) -> dict:
             materials=len(records),
         )
     )
-    return {"scene": root, "receipt": receipt}
+    return {root_field: root, "receipt": receipt}

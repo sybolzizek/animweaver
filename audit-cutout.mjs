@@ -22,7 +22,7 @@ const spec = JSON.parse(await readFile(specFile, 'utf8'));
 const assets = new Map();
 const add = (name, file, type) => assets.set('/' + name, {path:file, contentType:type});
 add('scene.json', specFile, 'application/json');
-for (const name of ['cutout-scene.mjs', 'cutout-timeline.mjs', 'cutout-mesh.mjs', 'cutout-shadows.mjs', 'cutout-seams.mjs'])
+for (const name of ['cutout-scene.mjs', 'cutout-timeline.mjs', 'scene-evaluate.mjs', 'cutout-mesh.mjs', 'cutout-shadows.mjs', 'cutout-seams.mjs'])
   add(name, join(here, name), 'text/javascript');
 const installedSpec = await realpath(specFile);
 for (const name of [spec.background, spec.backing, ...spec.layers.map(layer => layer.file), ...(spec.seams ?? []).map(seam => seam.file)].filter(Boolean)) {
@@ -34,6 +34,15 @@ for (const name of [spec.background, spec.backing, ...spec.layers.map(layer => l
 
 function eventTimes() {
   const events = new Map();
+  const groups = new Map(spec.groups.map(node => [node.key, node]));
+  const usesLocalTime = node => {
+    let current = node;
+    while (current) {
+      if (current.local_time) return true;
+      current = current.parent == null ? null : groups.get(current.parent);
+    }
+    return false;
+  };
   const addEvent = (time, reason) => {
     if (!Number.isFinite(time) || time < 0 || time > spec.duration) return;
     const key = Number(time.toFixed(6));
@@ -43,11 +52,23 @@ function eventTimes() {
   addEvent(0, 'scene:start');
   addEvent(spec.duration, 'scene:end');
   for (const node of [...spec.groups, ...spec.layers]) {
+    // Local tracks can cross the same key many times. The regular frame pass
+    // still samples them; do not mislabel a local key value as a global second.
+    if (usesLocalTime(node)) continue;
     for (const pose of node.motion ?? []) addEvent(pose.time, `motion:${node.key}`);
+    for (const key of node.opacity ?? []) addEvent(key.time, `opacity:${node.key}`);
   }
   for (const layer of spec.layers) {
+    if (usesLocalTime(layer)) continue;
     for (const key of layer.depth ?? []) addEvent(key.time, `depth:${layer.key}`);
     for (const key of layer.appearance?.light ?? []) addEvent(key.time, `light:${layer.key}`);
+  }
+  for (const key of spec.camera?.motion ?? []) addEvent(key.time, 'camera:motion');
+  for (const [index, shake] of (spec.camera?.shakes ?? []).entries()) {
+    const end = shake.time + shake.duration;
+    addEvent(shake.time, `camera:shake:start:${index}`);
+    addEvent(shake.time + Math.min(shake.duration / 2, 0.25 / shake.frequency), `camera:shake:impact:${index}`);
+    addEvent(end, `camera:shake:end:${index}`);
   }
   for (const [kind, rows] of [['seam', spec.seams ?? []], ['matte', spec.mattes ?? []]]) {
     for (const row of rows) for (const [start, end] of row.windows ?? []) {

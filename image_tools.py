@@ -1,7 +1,7 @@
 """MCP entry points for whole-frame image decomposition."""
 
 import asyncio
-from typing import Annotated
+from typing import Annotated, Literal
 
 import image_split
 import cutout_scene
@@ -140,12 +140,21 @@ def register_image_tools(mcp, work):
         shadows: list[cutout_scene.SoftShadow] | None = None,
         seams: list[Seam] | None = None,
         mattes: list[cutout_scene.LocalMatte] | None = None,
+        camera: cutout_scene.CameraTrack | None = None,
     ) -> dict:
         """Build a browser scene. ID supplies the canvas image (or its split). List layers back to front.
 
-        A layer uses a hard selection or an image source, from the base or another image. Offset places
-        source pixel (0,0) on the canvas. Pivots, bone tips and translations use canvas pixels.
+        A layer uses exactly one hard selection, image source or editable scene source. Offset places
+        source pixel (0,0) or the child scene canvas origin on this canvas. A scene source is rendered
+        only by the Three backend; the layer's local_time supplies that child instance's scene time, so
+        repeated references can run independently. Scene sources may nest, but cannot form cycles or use
+        raster-only edge, mesh, paint, matte-only or appearance fields. Pivots, bone tips and translations
+        use canvas pixels.
         A selection layer can use edge_matte from refine_image_split_edges on that same selection.
+        Groups remain transform-only by default. Giving a group opacity, non-normal blend_mode or
+        nonzero plane_depth makes it an isolated full-canvas composite: its descendants are rendered
+        together before the group operation. Isolated descendants must occupy one contiguous layer block;
+        shadows, seams, mattes and surface mounts cannot cross that composite boundary.
         Use one continuous mesh for soft joints; weight selections guide bones without creating visible seams.
         A rigid attachment may instead follow an unparented group with mount={layer, point, towards}.
         Mount points use uncropped layer source pixels; the group's pivot lands on point and follows
@@ -166,6 +175,16 @@ def register_image_tools(mcp, work):
         max_span limits the strip at stretched poses in canvas pixels; it must not bridge an intentional opening.
         An optional aligned backing image supplies what is revealed; without it gaps stay transparent.
         Optional appearance and receiver-clipped shadows change compositing, not geometry or ownership.
+        camera supplies global framing keys and deterministic impact shakes. Camera move is a screen-space
+        framing shift; truck is a stage-space camera translation and dolly changes perspective relative to
+        layer.plane_depth. Positive plane depth is closer to camera. focal defaults to twice the larger canvas
+        dimension. zoom and rotation use the canvas center unless pivot is supplied. A layer opacity track
+        and blend_mode are low-level compositing controls; they do not imply a preset visual effect. Pose and camera
+        ease controls the interval beginning at that key; hold creates anticipation or hit-stop timing.
+        local_time maps a node and its descendants onto a local clock. start and offset align the parent and local
+        clocks; scale changes speed and may be zero or negative. Optional clamp, repeat and pingpong modes require
+        a positive duration. Nested mappings compose. Camera motion and relationship windows remain on scene time.
+        Camera movement can reveal transparent canvas edges, so audit the widest framing before export.
         Render the furthest pose or a contact frame before exporting the full sequence.
         """
         return await asyncio.to_thread(
@@ -179,6 +198,7 @@ def register_image_tools(mcp, work):
             shadows=shadows,
             seams=seams,
             mattes=mattes,
+            camera=camera,
         )
 
     @mcp.tool()
@@ -198,6 +218,12 @@ def register_image_tools(mcp, work):
         edge_mattes: dict[cutout_scene.Key, str | None] | None = None,
         motions: dict[cutout_scene.Key, list[cutout_scene.Pose]] | None = None,
         duration: cutout_scene.Positive | None = None,
+        camera: cutout_scene.CameraTrack | None = None,
+        opacities: dict[cutout_scene.Key, list[cutout_scene.OpacityKey]] | None = None,
+        blend_modes: dict[cutout_scene.Key, cutout_scene.Blend] | None = None,
+        plane_depths: dict[cutout_scene.Key, FiniteFloat] | None = None,
+        local_times: dict[cutout_scene.Key, cutout_scene.LocalTime | None]
+        | None = None,
     ) -> dict:
         """Create a new scene; revise only the layer or group implicated by the rendered frame.
 
@@ -206,6 +232,9 @@ def register_image_tools(mcp, work):
         Edge mattes affect rendering only and must refine that layer's exact selection.
         motions replaces the supplied groups' or layers' complete tracks, [] clears one track.
         duration optionally changes the shot length; keyframes and windows are validated, not retimed.
+        camera replaces the complete framing track and shake list; pass an empty camera object for identity.
+        opacities, blend_modes and plane_depths replace only the named layer or group values and reuse compiled rasters.
+        local_times replaces a named layer or group's clock mapping; null restores the inherited parent clock.
         Shadows, seams and mattes replace their respective lists. Pivots stay unchanged.
         """
         return await asyncio.to_thread(
@@ -226,6 +255,11 @@ def register_image_tools(mcp, work):
             edge_mattes=edge_mattes,
             motions=motions,
             duration=duration,
+            camera=camera,
+            opacities=opacities,
+            blend_modes=blend_modes,
+            plane_depths=plane_depths,
+            local_times=local_times,
         )
 
     @mcp.tool()
@@ -254,13 +288,28 @@ def register_image_tools(mcp, work):
 
     @mcp.tool()
     async def render_cutout_scene(
-        id: str, output: str, time: FiniteFloat | None = None, fps: int = 24
+        id: str,
+        output: str,
+        time: FiniteFloat | None = None,
+        fps: int = 24,
+        backend: Literal["canvas2d", "three"] = "canvas2d",
     ) -> dict:
         """Render a PNG at time (seconds), or submit an MP4 export at fps.
 
         PNG returns the finished file and retains transparency. MP4 returns a job ID:
         use inspect_cutout_video to read status and the finished file. Repeating the
         same MP4 request returns the same job. MP4 rejects unfilled frames.
+        canvas2d supports the complete scene contract. three is a GPU plane
+        backend for transform groups, local time, editable scene sources, perspective
+        camera tracks, plane depth, layer opacity, nested isolated group opacity and
+        explicit depth order, plus normal/add/multiply/screen compositing for layers
+        and isolated groups. Moving keep/erase mattes run as GPU alpha passes and
+        retain their scene-time windows. Compiled skin grids use indexed BufferGeometry
+        with GPU weight and bone textures, without a four-bone attribute limit. It
+        also supports deformed surface queries, surface mounts, moving seam strips,
+        animated local lighting and receiver-clipped projected soft shadows. It rejects
+        blend modes outside normal/add/multiply/screen.
+        canvas2d rejects scene-source layers rather than flattening them.
         """
         if not 1 <= fps <= 120:
             raise ValueError("FPS must be 1–120")
@@ -268,9 +317,9 @@ def register_image_tools(mcp, work):
         if work.path(output).suffix.lower() == ".mp4":
             if time is not None:
                 raise ValueError("time applies only to PNG")
-            return scene_export.start(work, scene, output, fps)
+            return scene_export.start(work, scene, output, fps, backend)
         return await asyncio.to_thread(
-            scene_export.render, work, scene, output, time, fps
+            scene_export.render, work, scene, output, time, fps, backend
         )
 
     @mcp.tool()

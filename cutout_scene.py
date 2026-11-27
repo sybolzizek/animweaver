@@ -18,7 +18,29 @@ from scene_seams import Seam, build as build_seam
 
 Key = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,47}$")]
 Positive = Annotated[FiniteFloat, Field(gt=0)]
+NonNegative = Annotated[FiniteFloat, Field(ge=0)]
 Point = tuple[FiniteFloat, FiniteFloat]
+Ease = Literal["linear", "smooth", "ease_in", "ease_out", "hold"]
+Blend = Literal[
+    "normal",
+    "add",
+    "multiply",
+    "screen",
+    "overlay",
+    "darken",
+    "lighten",
+    "color-dodge",
+    "color-burn",
+    "hard-light",
+    "soft-light",
+    "difference",
+    "exclusion",
+    "hue",
+    "saturation",
+    "color",
+    "luminosity",
+]
+TimeMode = Literal["free", "clamp", "repeat", "pingpong"]
 
 
 class SurfaceMount(BaseModel):
@@ -86,6 +108,67 @@ class Pose(BaseModel):
     move: tuple[FiniteFloat, FiniteFloat] = (0, 0)
     rotate: FiniteFloat = 0
     scale: tuple[Positive, Positive] = (1, 1)
+    ease: Ease = "smooth"
+
+
+class OpacityKey(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    time: Annotated[FiniteFloat, Field(ge=0)]
+    value: Annotated[FiniteFloat, Field(ge=0, le=1)]
+    ease: Ease = "smooth"
+
+
+class CameraPose(BaseModel):
+    """A framing key. Ease controls the interval beginning at this key."""
+
+    model_config = ConfigDict(extra="forbid")
+    time: Annotated[FiniteFloat, Field(ge=0)]
+    move: Point = (0, 0)
+    truck: Point = (0, 0)
+    dolly: FiniteFloat = 0
+    zoom: Positive = 1
+    rotate: FiniteFloat = 0
+    ease: Ease = "smooth"
+
+
+class CameraShake(BaseModel):
+    """A deterministic screen-space impact cue layered over the camera track."""
+
+    model_config = ConfigDict(extra="forbid")
+    time: Annotated[FiniteFloat, Field(ge=0)]
+    duration: Positive
+    amplitude: tuple[NonNegative, NonNegative] = (0, 0)
+    rotate: Annotated[FiniteFloat, Field(ge=0)] = 0
+    frequency: Annotated[FiniteFloat, Field(gt=0, le=120)] = 18
+    decay: Annotated[FiniteFloat, Field(ge=0, le=8)] = 2
+    seed: Annotated[int, Field(ge=-1_000_000, le=1_000_000)] = 0
+
+
+class CameraTrack(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pivot: Point | None = None
+    focal: Positive | None = None
+    motion: list[CameraPose] = Field(default_factory=list)
+    shakes: list[CameraShake] = Field(default_factory=list)
+
+
+class LocalTime(BaseModel):
+    """Map a parent clock into the clock used by one node and its descendants."""
+
+    model_config = ConfigDict(extra="forbid")
+    start: FiniteFloat = 0
+    offset: FiniteFloat = 0
+    scale: FiniteFloat = 1
+    duration: Positive | None = None
+    mode: TimeMode = "free"
+
+    @model_validator(mode="after")
+    def bounded_mode(self):
+        if self.mode == "free" and self.duration is not None:
+            raise ValueError("Free local time must not declare a duration")
+        if self.mode != "free" and self.duration is None:
+            raise ValueError("Clamp, repeat and pingpong local time need a duration")
+        return self
 
 
 class Node(BaseModel):
@@ -95,6 +178,10 @@ class Node(BaseModel):
     pivot: tuple[FiniteFloat, FiniteFloat] = (0, 0)
     motion: list[Pose] = Field(default_factory=list)
     mount: SurfaceMount | None = None
+    plane_depth: FiniteFloat = 0
+    opacity: list[OpacityKey] = Field(default_factory=list)
+    blend_mode: Blend = "normal"
+    local_time: LocalTime | None = None
 
 
 class BoneBinding(BaseModel):
@@ -121,6 +208,7 @@ class DepthKey(BaseModel):
 class Cutout(Node):
     selection: str | None = None
     source: str | None = None
+    scene: str | None = None
     edge_matte: str | None = None
     offset: tuple[int, int] = (0, 0)
     mesh: Skin | None = None
@@ -132,9 +220,20 @@ class Cutout(Node):
 
     @model_validator(mode="after")
     def one_source(self):
-        if (self.selection is None) == (self.source is None):
+        if sum(value is not None for value in (self.selection, self.source, self.scene)) != 1:
             raise ValueError(
-                "Provide exactly one hard selection or image source for each layer"
+                "Provide exactly one hard selection, image source or scene source for each layer"
+            )
+        if self.scene is not None and (
+            self.edge_matte is not None
+            or self.mesh is not None
+            or self.underlap
+            or self.paintover
+            or self.matte_only
+            or self.appearance is not None
+        ):
+            raise ValueError(
+                "A scene source cannot use raster edge, mesh, paint, matte-only or appearance fields"
             )
         if self.matte_only and self.selection is not None:
             raise ValueError(
@@ -143,6 +242,18 @@ class Cutout(Node):
         if self.edge_matte is not None and self.selection is None:
             raise ValueError("A refined edge matte needs a hard cutout selection")
         return self
+
+
+def _validate_scene_dependency(work, ref_id, trail=()):
+    if ref_id in trail:
+        raise ValueError(f"Cyclic scene source dependency at {ref_id}")
+    scene = work.load(ref_id)
+    if scene.get("kind") != "cutout_scene":
+        raise ValueError("A scene source must reference an editable cutout scene")
+    for layer in scene.get("layers", []):
+        if child := layer.get("scene"):
+            _validate_scene_dependency(work, child, (*trail, ref_id))
+    return scene
 
 
 def _lineage(work, selection):
@@ -308,6 +419,7 @@ def build(
     shadows=None,
     seams=None,
     mattes=None,
+    camera=None,
 ):
     recipe = plan_scene(
         dict(
@@ -320,6 +432,7 @@ def build(
             shadows=shadows or [],
             seams=seams or [],
             mattes=mattes or [],
+            camera=camera,
         )
     )["recipe"]
     return _assemble(work, recipe)
@@ -335,6 +448,19 @@ def _motion_provenance(record, provenance):
     return record
 
 
+def _validate_projection(width, height, nodes, camera):
+    focal = camera.focal if camera and camera.focal else 2 * max(width, height)
+    dollies = [0, *(key.dolly for key in camera.motion)] if camera else [0]
+    for dolly in dollies:
+        if focal - dolly <= 1:
+            raise ValueError("Camera dolly crosses the projection plane")
+        for node in nodes:
+            if focal - dolly - node.plane_depth <= 1:
+                raise ValueError(
+                    f"Node {node.key} crosses the camera projection plane"
+                )
+
+
 def _assemble(work, recipe, previous=None, provenance=None):
     base_id, duration, backing = (
         recipe["base"],
@@ -346,6 +472,11 @@ def _assemble(work, recipe, previous=None, provenance=None):
     shadows = [SoftShadow.model_validate(shadow) for shadow in recipe["shadows"]]
     seams = [Seam.model_validate(seam) for seam in recipe["seams"]]
     mattes = [LocalMatte.model_validate(matte) for matte in recipe["mattes"]]
+    camera = (
+        CameraTrack.model_validate(recipe["camera"])
+        if recipe.get("camera") is not None
+        else None
+    )
     priority = recipe["claim_order"]
     base = work.load(base_id)
     base_source = base["parent"] if base["kind"] == "image_split" else base_id
@@ -358,11 +489,21 @@ def _assemble(work, recipe, previous=None, provenance=None):
 
     pixels = image_for(base_source)
     height, width = pixels.shape[:2]
+    _validate_projection(width, height, [*groups, *layers], camera)
     specs = {layer.key: layer for layer in layers}
     ownership = {base_source: np.zeros((height, width), np.uint32)}
     masks = {}
     for i, key in enumerate(priority, 1):
         layer = specs[key]
+        if layer.scene is not None:
+            child = _validate_scene_dependency(work, layer.scene)
+            region = Region(
+                (0, 0, child["width"], child["height"]),
+                np.ones((child["height"], child["width"]), dtype=bool),
+                child["width"] * child["height"],
+            )
+            masks[key] = (layer.scene, region, None, 0)
+            continue
         if layer.source is not None:
             pixels_for_layer = image_for(layer.source)
             region = Region.from_mask(pixels_for_layer[..., 3] > 0)
@@ -391,6 +532,22 @@ def _assemble(work, recipe, previous=None, provenance=None):
     group_by_key = {group.key: group for group in groups}
     for layer in layers:
         source_id, region, slot, requested = masks[layer.key]
+        if layer.scene is not None:
+            dx, dy = layer.offset
+            left, top, right, bottom = region.box
+            regions[layer.key] = region
+            catalog.append(
+                layer.model_dump(exclude={"selection", "source", "scene", "mesh"})
+                | {
+                    "scene_id": layer.scene,
+                    "box": [left + dx, top + dy, right + dx, bottom + dy],
+                    "source_box": list(region.box),
+                    "source_id": layer.scene,
+                    "pixels": region.area,
+                    "taken_by_other_cutouts": 0,
+                }
+            )
+            continue
         if slot is not None:
             layer_owner, label = slot
             region = Region.from_mask(layer_owner == label)
@@ -433,7 +590,7 @@ def _assemble(work, recipe, previous=None, provenance=None):
         dx, dy = layer.offset
         left, top, right, bottom = region.box
         catalog.append(
-            layer.model_dump(exclude={"selection", "source", "mesh"})
+            layer.model_dump(exclude={"selection", "source", "scene", "mesh"})
             | {
                 "file": file,
                 "box": [left + dx, top + dy, right + dx, bottom + dy],
@@ -491,9 +648,18 @@ def _assemble(work, recipe, previous=None, provenance=None):
         files["backing.png"] = Image.fromarray(fill_pixels)
     seam_specs = []
     if seams:
-        drawable = {
-            item["key"]: (files[item["file"]], item["source_box"]) for item in catalog
+        seam_layers = {
+            edge.layer for seam in seams for edge in (seam.a, seam.b)
         }
+        drawable = {}
+        for item in catalog:
+            if item["key"] not in seam_layers:
+                continue
+            if "file" not in item:
+                raise ValueError(
+                    f"Seam layer {item['key']} must be a raster cutout, not a scene source"
+                )
+            drawable[item["key"]] = (files[item["file"]], item["source_box"])
         for seam in seams:
             ribbon, texture = build_seam(seam, drawable)
             seam_specs.append(ribbon)
@@ -513,12 +679,17 @@ def _assemble(work, recipe, previous=None, provenance=None):
         spec["seams"] = seam_specs
     if mattes:
         spec["mattes"] = [matte.model_dump() for matte in mattes]
+    if camera is not None:
+        spec["camera"] = camera.model_dump()
     files["scene.json"] = json.dumps(spec, ensure_ascii=False, indent=2).encode()
     files["cutout-scene.mjs"] = (
         Path(__file__).with_name("cutout-scene.mjs").read_bytes()
     )
     files["cutout-timeline.mjs"] = (
         Path(__file__).with_name("cutout-timeline.mjs").read_bytes()
+    )
+    files["scene-evaluate.mjs"] = (
+        Path(__file__).with_name("scene-evaluate.mjs").read_bytes()
     )
     if seams or any(
         layer.mesh is not None or (layer.appearance and layer.appearance.light)
@@ -550,6 +721,7 @@ def _assemble(work, recipe, previous=None, provenance=None):
         claim_order=priority,
         cutouts=catalog,
         shadows=spec["shadows"],
+        camera=spec.get("camera"),
         **({"seams": [seam.model_dump() for seam in seams]} if seams else {}),
         **({"mattes": spec["mattes"]} if mattes else {}),
         backdrop_pixels=int(np.count_nonzero(owner == 0)),
@@ -559,11 +731,23 @@ def _assemble(work, recipe, previous=None, provenance=None):
 
 def _revise_timeline(work, scene, recipe, provenance=None):
     spec = json.loads(work.path(scene["files"]["scene.json"]).read_text("utf-8"))
-    motion = {layer["key"]: layer.get("motion", []) for layer in recipe["layers"]}
+    timeline = {layer["key"]: layer for layer in recipe["layers"]}
     spec.update(duration=float(recipe["duration"]), groups=recipe["groups"])
     spec["layers"] = [
-        layer | {"motion": motion[layer["key"]]} for layer in spec["layers"]
+        layer
+        | {
+            "motion": timeline[layer["key"]].get("motion", []),
+            "opacity": timeline[layer["key"]].get("opacity", []),
+            "blend_mode": timeline[layer["key"]].get("blend_mode", "normal"),
+            "plane_depth": timeline[layer["key"]].get("plane_depth", 0),
+            "local_time": timeline[layer["key"]].get("local_time"),
+        }
+        for layer in spec["layers"]
     ]
+    if recipe.get("camera") is None:
+        spec.pop("camera", None)
+    else:
+        spec["camera"] = recipe["camera"]
     record = {key: value for key, value in scene.items() if key not in ("id", "files")}
     record.update(
         parent=scene["id"],
@@ -571,6 +755,7 @@ def _revise_timeline(work, scene, recipe, provenance=None):
         layers=recipe["layers"],
         duration=spec["duration"],
         cutouts=spec["layers"],
+        camera=spec.get("camera"),
     )
     _motion_provenance(record, provenance)
     # A new, portable bundle with byte-identical rasters; no mask/mesh rebuild.
@@ -579,7 +764,12 @@ def _revise_timeline(work, scene, recipe, provenance=None):
         for name, path in scene["files"].items()
         if name != "scene.json"
     }
-    for name in ("cutout-scene.mjs", "cutout-timeline.mjs", "cutout-seams.mjs"):
+    for name in (
+        "cutout-scene.mjs",
+        "cutout-timeline.mjs",
+        "scene-evaluate.mjs",
+        "cutout-seams.mjs",
+    ):
         if name != "cutout-seams.mjs" or name in files:
             files[name] = Path(__file__).with_name(name).read_bytes()
     files["scene.json"] = json.dumps(spec, ensure_ascii=False, indent=2).encode()
@@ -596,8 +786,29 @@ def revise(work, scene, *, provenance=None, **patch):
         base=scene.get("base") or scene["split"], backing=scene.get("backing")
     )
     original.update({key: scene.get(key, []) for key in ("shadows", "seams", "mattes")})
+    original["camera"] = scene.get("camera")
     result = plan_scene(original, patch)
     if result["timelineOnly"]:
+        camera = (
+            CameraTrack.model_validate(result["recipe"]["camera"])
+            if result["recipe"].get("camera") is not None
+            else None
+        )
+        _validate_projection(
+            scene["width"],
+            scene["height"],
+            [
+                *[
+                    Node.model_validate(group)
+                    for group in result["recipe"]["groups"]
+                ],
+                *[
+                    Cutout.model_validate(layer)
+                    for layer in result["recipe"]["layers"]
+                ],
+            ],
+            camera,
+        )
         return _revise_timeline(work, scene, result["recipe"], provenance)
     return _assemble(
         work, result["recipe"], previous=scene["id"], provenance=provenance

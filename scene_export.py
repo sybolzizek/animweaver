@@ -33,11 +33,13 @@ def _target(work, scene, output):
     return path
 
 
-def render(work, scene, output, time, fps):
+def render(work, scene, output, time, fps, backend="canvas2d"):
     path = _target(work, scene, output)
     suffix = path.suffix.lower()
     if path.exists():
         raise ValueError("Output directory must exist and output must be a new file")
+    if backend not in ("canvas2d", "three"):
+        raise ValueError("Render backend must be canvas2d or three")
     node = shutil.which(os.environ.get("REFERENCE_NODE", "node"))
     if not node:
         raise ValueError("Install Node.js or set REFERENCE_NODE to the Node executable")
@@ -67,6 +69,7 @@ def render(work, scene, output, time, fps):
                     suffix,
                     str(time or 0),
                     str(fps),
+                    backend,
                 ]
             )
         )
@@ -122,6 +125,7 @@ def render(work, scene, output, time, fps):
             sha256=work.digest(path),
             width=scene["width"] + (scene["width"] % 2 if ffmpeg else 0),
             height=scene["height"] + (scene["height"] % 2 if ffmpeg else 0),
+            backend=backend,
             **stats,
         ),
         files,
@@ -191,7 +195,7 @@ def _report(work, receipt, status, **result):
     )
 
 
-def start(work, scene, output, fps):
+def start(work, scene, output, fps, backend="canvas2d"):
     path = _target(work, scene, output)
     if path.suffix.lower() != ".mp4":
         raise ValueError("Background export requires an MP4 path")
@@ -201,6 +205,7 @@ def start(work, scene, output, fps):
             "scene": scene["id"],
             "output": work.rel(path),
             "fps": fps,
+            "backend": backend,
         }
     )
     _, receipt = _job(work, record["id"])
@@ -245,7 +250,12 @@ def run_job(work, id):
     _report(work, receipt, "running")
     try:
         result = render(
-            work, work.load(record["scene"]), record["output"], None, record["fps"]
+            work,
+            work.load(record["scene"]),
+            record["output"],
+            None,
+            record["fps"],
+            record.get("backend", "canvas2d"),
         )
     except Exception as exc:
         _report(work, receipt, "failed", error=str(exc)[:4000])
